@@ -1,0 +1,16 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "node",
+            "request": "launch",
+            "name": "Launch CLI",
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
+            "outputCapture": "std",
+            "runtimeExecutable": "${workspaceFolder}\\fbxsdk-node\\node.exe",
+            "program": "${workspaceFolder}\\dist\\Cli.js"
+        }
+    ]
+}

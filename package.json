@@ -1,0 +1,20 @@
+{
+  "name": "fbxsdk-node",
+  "version": "1.0.0-alpha.0",
+  "description": "",
+  "main": "fbxsdk-node.js",
+  "dependencies": {
+    "fs-extra": "^9.0.1",
+    "urijs": "^1.19.2"
+  },
+  "devDependencies": {
+    "@types/fs-extra": "^9.0.1",
+    "@types/node": "^14.0.25",
+    "@types/urijs": "^1.19.9"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC"
+}
