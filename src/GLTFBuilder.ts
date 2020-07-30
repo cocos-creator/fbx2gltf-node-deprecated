@@ -1,5 +1,4 @@
 import * as glTFLib from './libglTF';
-import { encodeArrayBufferToBase64 } from './Util';
 
 export class GLTFBuilder {
     private _bufferKeeps: Array<Array<{
@@ -22,6 +21,15 @@ export class GLTFBuilder {
         textures: NonNullable<glTFLib.GlTf['textures']>;
         extensionsUsed: NonNullable<glTFLib.GlTf['extensionsUsed']>;
     };
+
+    /**
+     * `undefined` means no image data attach.
+     * String represents path.
+     */
+    public images: Array<undefined | string | {
+        mimeType: string;
+        data: Uint8Array;
+    }> = [];
 
     constructor() {
         this.glTFRoot = {
@@ -143,33 +151,38 @@ export class GLTFBuilder {
             }
         }
         
-        document.buffers = [];
-        for (let iBuffer = 0; iBuffer < this._bufferKeeps.length; ++iBuffer) {
+        const nBuffers = this._bufferKeeps.length;
+        document.buffers = new Array(nBuffers);
+        const bufferStorages = new Array<Uint8Array>(nBuffers);
+        for (let iBuffer = 0; iBuffer < nBuffers; ++iBuffer) {
             const bufferKeep = this._bufferKeeps[iBuffer];
             let bufferByteLength = 0;
             for (const bufferViewKeep of bufferKeep) {
                 bufferByteLength += bufferViewKeep.data.byteLength;
             }
-            const bufferData = new Uint8Array(bufferByteLength);
+            const bufferStorage = new Uint8Array(bufferByteLength);
             let bufferOffset = 0;
             for (const bufferViewKeep of bufferKeep) {
                 const bufferView = this.glTFRoot.bufferViews[bufferViewKeep.index];
                 bufferView.byteOffset = bufferOffset;
                 bufferView.buffer = iBuffer;
-                bufferData.set(new Uint8Array(bufferViewKeep.data), bufferOffset);
+                bufferStorage.set(new Uint8Array(bufferViewKeep.data), bufferOffset);
                 bufferOffset += bufferViewKeep.data.byteLength;
             }
+            bufferStorages[iBuffer] = bufferStorage;
+            const glTFBuffer: glTFLib.Buffer = {
+                byteLength: bufferStorage.byteLength,
+            };
+            document.buffers[iBuffer] = glTFBuffer;
 
             // writeFileSync('out.bin', bufferData);
             // const bufferUri = './out.bin';
-            const bufferUri = `data:application/octet-stream;base64,${encodeArrayBufferToBase64(bufferData)}`;
-            const glTFBuffer: glTFLib.Buffer = {
-                uri: bufferUri,
-                byteLength: bufferData.byteLength,
-            };
-            document.buffers.push(glTFBuffer);
         }
 
-        return document;
+        return {
+            json: document,
+            buffers: bufferStorages,
+            images: this.images,
+        };
     }
 }

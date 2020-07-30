@@ -5,9 +5,7 @@ import { GLTFBuilder } from './GLTFBuilder';
 import * as glTF from './libglTF';
 import ps from 'path';
 import fs from 'fs-extra';
-import nodeUrl from 'url';
-import URI from 'urijs';
-import { encodeArrayBufferToBase64 } from './Util';
+import { encodeArrayBufferToBase64, relativeUriBetweenPath } from './Util';
 import myVersion from './Version';
 
 export function convert(options: {
@@ -807,18 +805,8 @@ export function convert(options: {
     function convertTextureSource(fbxFileTexture: fbxSdk.FbxFileTexture) {
         const imageName = fbxFileTexture.GetName();
         const imageFile = getActualImageFile(fbxFileTexture);
-        let glTFUri: string;
-        if (convertContext.imageProcess === ImageProcess.reference) {
-            const glTFDir = './';
-            const glTFDirUri = new URI(nodeUrl.pathToFileURL(glTFDir).href);
-            const imageUri = new URI(nodeUrl.pathToFileURL(imageFile).href);
-            glTFUri = imageUri.relativeTo(glTFDirUri.href()).href();
-        } else {
-            glTFUri = readImageFileAsDataUri(imageFile);
-        }
         const glTFImage: glTF.Image = {
             name: imageName,
-            uri: glTFUri,
         };
         glTFImage.extensions = {
             [glTFExtensionFbxSdkTextureInfoName]: {
@@ -828,6 +816,8 @@ export function convert(options: {
         };
         glTFBuilder.useExtension(glTFExtensionFbxSdkTextureInfoName);
         const glTFImageIndex = glTFBuilder.addImage(glTFImage);
+        // Store the absolute path
+        glTFBuilder.images[glTFImageIndex] = imageFile;
         return glTFImageIndex;
     }
 
@@ -836,26 +826,6 @@ export function convert(options: {
         const fileName = fbxFileTexture.GetFileName();
         const fbxDir = ps.dirname(options.input);
         return ps.join(fbxDir, relativeFileName);
-    }
-
-    function readImageFileAsDataUri(imageFile: string) {
-        const extName = ps.extname(imageFile).toLowerCase();
-        let mimeType: string;
-        switch (extName) {
-            case 'jpg':
-            case 'jpeg':
-                mimeType = 'image/jpeg';
-                break;
-            case 'png':
-                mimeType = 'image/png';
-                break;
-            default:
-                mimeType = extName.startsWith('.') ? `image/${extName.substr(1)}`: extName;
-                break;
-        }
-        const bufferData = fs.readFileSync(imageFile);
-        const uri = `data:${mimeType};base64,${encodeArrayBufferToBase64(bufferData)}`;
-        return uri;
     }
 
     function convertAnimation(fbxScene: fbxSdk.FbxScene, sampleStep: number, startTime: number, duration: number) {
