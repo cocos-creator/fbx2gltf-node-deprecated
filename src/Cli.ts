@@ -22,6 +22,9 @@ import yargs from 'yargs';
     const glTF = convert({
         input,
         fbmDir,
+        animationBakeRate: cliArgs.animationBakeRate,
+        noFlipV: cliArgs.noFlipV,
+        suspectedAnimationDurationLimit: cliArgs.suspectedAnimationDurationLimit,
     });
 
     write(glTF, {
@@ -36,6 +39,8 @@ function readCliArgs(): {
     input: string;
     output?: string;
     fbmDir?: string;
+    noFlipV?: boolean;
+    animationBakeRate?: number;
     suspectedAnimationDurationLimit?: number;
 } {
     yargs.help();
@@ -47,11 +52,19 @@ function readCliArgs(): {
         });
         yargs.option('output', {
             type: 'string',
-            description: 'The output path to the .gltf or .glb file.',
+            description: 'The output path to the .gltf or .glb file. Defaults to `<working-directory>/<FBX-filename-basename>.gltf`',
         });
         yargs.option('fbm-dir', {
             type: 'string',
             description: 'The directory to store the embedded media.',
+        });
+        yargs.option('no-flip-v', {
+            type: 'boolean',
+            description: 'Do not flip V texture coordinates.',
+        });
+        yargs.option('animation-bake-rate', {
+            type: 'number',
+            description: 'Animation bake rate(in FPS).',
         });
         yargs.option('suspected-animation-duration-limit', {
             type: 'number',
@@ -63,6 +76,8 @@ function readCliArgs(): {
         input: argv['filename'] as string,
         output: argv['output'] as string | undefined,
         fbmDir: argv['fbm-dir'] as string | undefined,
+        noFlipV: argv['no-flip-v'] as boolean | undefined,
+        animationBakeRate: argv['animation-bake-rate'] as number | undefined,
         suspectedAnimationDurationLimit: argv['suspected-animation-duration-limit'] as number | undefined,
     };
 }
