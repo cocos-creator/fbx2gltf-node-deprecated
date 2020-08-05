@@ -9,11 +9,25 @@ import { Vec3 } from './math/Vec3';
 import { Quat } from './math/Quat';
 import { asserts } from './Util';
 import { EPSILON } from './math/epsilon';
+import { GLTFExtensionFbxSdkSkin, glTFExtensionFbxSdkSkinName, GLTFExtensionFbxSdkTextureInfo, glTFExtensionFbxSdkTextureInfoName } from './Extensions';
 
 export function convert(options: {
     input: string;
     fbmDir?: string;
+    noFlipV?: boolean;
+    animationBakeRate?: number;
+
+    /**
+     * The max animation duration, in seconds. SKip the animation curves if the their actual duration exceeds this limit.
+     * Having this field because sometimes 3ds Max will export a large span animation.
+     * This will leads to out of memory problem and cause unexpected application dump.
+     */
+    suspectedAnimationDurationLimit?: number;
 }) {
+    const animationBakeRate = options.animationBakeRate ?? convert.defaultAnimationBakeRate;
+    const flipV = !(options.noFlipV ?? false);
+    const suspectedAnimationDurationLimit = options.suspectedAnimationDurationLimit ?? convert.defaultSuspectedAnimationDurationLimit;
+
     const convertContext = new ConvertContext();
     const glTFBuilder = new GLTFBuilder();
     main();
@@ -28,9 +42,10 @@ export function convert(options: {
         prepareScene(fbxManager, fbxScene);
         createNodes(fbxScene);
         convertScene(fbxScene);
+        const animationSampleStep = 1.0 / animationBakeRate;
         convertAnimation(
             fbxScene,
-            1.0 / 30.0,
+            animationSampleStep,
             0,
             Infinity,
             );
@@ -557,7 +572,7 @@ export function convert(options: {
                 // UVs
                 for (let iUVElement = 0; iUVElement < nUVElements; ++iUVElement) {
                     const uv = GetVertexAttribute(uvElements[iUVElement], iControlPoint, iPolygonVertex)
-                    primitive.uvs[iUVElement].push(convertContext.flipV ? new fbxSdk.FbxVector2(uv.GetX(), 1.0 - uv.GetY()) : uv)
+                    primitive.uvs[iUVElement].push(flipV ? new fbxSdk.FbxVector2(uv.GetX(), 1.0 - uv.GetY()) : uv)
                 }
                 // Vertex colors
                 for (let iVertexColorElement = 0; iVertexColorElement < nVertexColorElements; ++iVertexColorElement) {
@@ -959,10 +974,10 @@ export function convert(options: {
             }
         }
 
-        if (duration > convertContext.suspectedAnimationDurationLimit) {
+        if (duration > suspectedAnimationDurationLimit) {
             console.warn(
                 `The node "${fbxNode.GetName()}"'s animation duration(${duration} seconds) ` +
-                `exceeds the suspected limit ${convertContext.suspectedAnimationDurationLimit} seconds. ` +
+                `exceeds the suspected limit ${suspectedAnimationDurationLimit} seconds. ` +
                 `This may be abnormal and may leads to running out of memory exception. ` +
                 `To avoid unexpected dump, we ignored this part of animation. ` +
                 `But you can force to process by option --suspected-animation-duration-limit.`);
@@ -1115,17 +1130,14 @@ export function convert(options: {
     }
 }
 
+export namespace convert {
+    export const defaultAnimationBakeRate = 30;
+    export const defaultSuspectedAnimationDurationLimit = 60 * 10; // I think 10 minutes is extraordinary enough...
+}
+
 class ConvertContext {
     private _nodeMap: Record<number, number> = {};
-    public flipV: boolean = true;
     public imageProcess = ImageProcess.reference;
-
-    /**
-     * The max animation duration, in seconds. SKip the animation curves if the their actual duration exceeds this limit.
-     * Having this field because sometimes 3ds Max will export a large span animation.
-     * This will leads to out of memory problem and cause unexpected application dump.
-     */
-    public suspectedAnimationDurationLimit = 60 * 10; // I think 10 minutes is extraordinary enough...
 
     constructor() {
     }
@@ -1331,23 +1343,6 @@ type JointsPer4 = [number, number, number, number];
 type InfluencesPer4 = [JointsPer4, WeightsPer4];
 
 type InfluencePer4LayerElement = InfluencesPer4[];
-
-const glTFExtensionFbxSdkTextureInfoName = 'COCOS_FBX_SDK_texture_info';
-
-interface GLTFExtensionFbxSdkTextureInfo {
-    fileName: string;
-    relativeFileName: string;
-}
-
-const glTFExtensionFbxSdkSkinName = 'COCOS_FBX_SDK_skin';
-
-interface GLTFExtensionFbxSdkSkin {
-    /**
-     * Decides which method will be used to do the skinning. See `FBXSkin.EType`.
-     * If not present, means `FBXSkin.eLinear`.
-     */
-    type?: 'rigid' | 'dual_quaternion' | 'blend';
-}
 
 interface WritableArrayLike<T> {
     length: number;
