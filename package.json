@@ -1,8 +1,8 @@
 {
-  "name": "fbxsdk-node",
+  "name": "@cocos/fbx2gltf-node",
   "version": "1.0.0-alpha.0",
   "description": "",
-  "main": "fbxsdk-node.js",
+  "main": "dist/Convert.js",
   "dependencies": {
     "fs-extra": "^9.0.1",
     "urijs": "^1.19.2",
