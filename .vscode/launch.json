@@ -9,8 +9,12 @@
                 "<node_internals>/**"
             ],
             "outputCapture": "std",
-            "runtimeExecutable": "${workspaceFolder}\\fbxsdk-node\\node.exe",
-            "program": "${workspaceFolder}\\dist\\Cli.js"
+            "program": "${workspaceFolder}\\dist\\Cli.js",
+            "args": [
+                "--output=out/out.gltf",
+                // "test\\Models\\m_xuerenwang_01\\m_xuerenwang_01@death.FBX"
+                "test\\Models\\Sci-Fi Orc LOD.FBX"
+            ]
         }
     ]
 }

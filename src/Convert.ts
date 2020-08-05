@@ -4,9 +4,11 @@ import * as fbxSdk from '../fbxsdk-node/fbxsdk-node';
 import { GLTFBuilder } from './GLTFBuilder';
 import * as glTF from './libglTF';
 import ps from 'path';
-import fs from 'fs-extra';
-import { encodeArrayBufferToBase64, relativeUriBetweenPath } from './Util';
 import myVersion from './Version';
+import { Vec3 } from './math/Vec3';
+import { Quat } from './math/Quat';
+import { asserts } from './Util';
+import { EPSILON } from './math/epsilon';
 
 export function convert(options: {
     input: string;
@@ -151,6 +153,15 @@ export function convert(options: {
     function convertNodeRecursive(fbxNode: fbxSdk.FbxNode): number {
         const glTFNodeIndex = convertContext.getNode(fbxNode);
         const glTFNode = glTFBuilder.glTFRoot.nodes[glTFNodeIndex];
+
+        const inheritType = fbxNode.GetTransformationInheritType();
+        if (inheritType === fbxSdk.FbxTransform.eInheritRrSs) {
+            if (fbxNode.GetParent() !== null) {
+                console.warn(`Node ${fbxNode.GetName()} uses unsupported transform inheritance type 'eInheritRrSs'`);
+            }
+        } else if (inheritType === fbxSdk.FbxTransform.eInheritRrs) {
+            console.warn(`Node ${fbxNode.GetName()} uses unsupported transform inheritance type 'eInheritRrs'`);
+        }
 
         const fbxLocalTransform = fbxNode.EvaluateLocalTransform()
         if (!fbxLocalTransform.IsIdentity()) {
@@ -307,6 +318,8 @@ export function convert(options: {
         const skinJoints: number[] = [];
         const skinInverseBindMatrices: fbxSdk.FbxAMatrix[] = [];
 
+        let skinExtensionSkinningType: GLTFExtensionFbxSdkSkin['type'];
+
         const makeJointsWeightsLayerElement = (): JointsWeights['elements'][0] => {
             const result: InfluencesPer4[] = new Array(nControlPoints);
             for (let i = 0; i < nControlPoints; ++i) {
@@ -321,6 +334,17 @@ export function convert(options: {
         for (let iSkinDeformer = 0; iSkinDeformer < nSkinDeformers; ++iSkinDeformer) {
             const skinDeformer = fbxSdk.castAsFbxSkin(
                 fbxMesh.GetDeformer(iSkinDeformer, fbxSdk.FbxDeformer.eSkin));
+            const skinningType = skinDeformer.GetSkinningType();
+            if (skinningType !== fbxSdk.FbxSkin.eLinear) {
+                switch (skinningType) {
+                    case fbxSdk.FbxSkin.eRigid: skinExtensionSkinningType = 'rigid'; break;
+                    case fbxSdk.FbxSkin.eDualQuaternion: skinExtensionSkinningType = 'dual_quaternion'; break;
+                    case fbxSdk.FbxSkin.eBlend: skinExtensionSkinningType = 'blend'; break;
+                }
+            }
+            if (skinDeformer.GetSkinningType()) {
+
+            }
             const nClusters = skinDeformer.GetClusterCount();
             for (let iCluster = 0; iCluster < nClusters; ++iCluster) {
                 const cluster = skinDeformer.GetCluster(iCluster);
@@ -334,6 +358,19 @@ export function convert(options: {
                         `The joint node "${jointNode.GetName()}" is used for skinning ` +
                         `but missed in scene graph. It will be ignored.`);
                     continue;
+                }
+
+                const linkMode = cluster.GetLinkMode();
+                switch (linkMode) {
+                    case fbxSdk.FbxCluster.eAdditive:
+                        console.warn(
+                            `Unsupported cluster mode additive` +
+                            `[Mesh: ${fbxMesh.GetName()}; ClusterLink: ${jointNode.GetName()}]`);
+                        break;
+                    case fbxSdk.FbxCluster.eNormalize:
+                    case fbxSdk.FbxCluster.eTotalOne:
+                    default:
+                        break;
                 }
 
                 // Index this node to joint array
@@ -396,7 +433,7 @@ export function convert(options: {
         const ibmBufferViewInfo = glTFBuilder.createBufferView(ibmData.byteLength, 0, 0);
         new Uint8Array(ibmBufferViewInfo.data).set(new Uint8Array(ibmData.buffer, ibmData.byteOffset, ibmData.byteLength));
         const ibmAccessor: glTF.Accessor = {
-            name: `Inverse bind matrices`,
+            name: `${fbxMesh.GetName()} - Inverse bind matrices`,
             bufferView: ibmBufferViewInfo.index,
             count: skinInverseBindMatrices.length,
             type: glTF.MAT4,
@@ -404,11 +441,19 @@ export function convert(options: {
         };
         const ibmAccessorIndex = glTFBuilder.addAccessor(ibmAccessor);
         
-        
         const glTFSkin: glTF.Skin = {
             joints: skinJoints,
             inverseBindMatrices: ibmAccessorIndex,
         };
+
+        if (skinExtensionSkinningType) {
+            glTFSkin.extensions = {
+                [glTFExtensionFbxSdkSkinName]: {
+                    type: skinExtensionSkinningType,
+                } as GLTFExtensionFbxSdkSkin,
+            };
+            glTFBuilder.useExtension(glTFExtensionFbxSdkSkinName);
+        }
 
         const glTFSkinIndex = glTFBuilder.addSkin(glTFSkin);
         return {
@@ -835,7 +880,7 @@ export function convert(options: {
         const rootNode = fbxScene.GetRootNode();
         for (let iAnimStack = 0; iAnimStack < nAnimStacks; ++iAnimStack) {
             const animStack = fbxSdk.castAsFbxAnimStack(fbxScene.GetSrcObject(animStackCriteria, iAnimStack));
-            const nAnimLayers = animStack.GetSrcObjectCount(animLayerCriteria);
+            const nAnimLayers = animStack.GetMemberCount(animLayerCriteria);
             if (nAnimLayers > 0) {
                 const animName = animStack.GetName();
                 const glTFAnimation: glTF.Animation = {
@@ -844,7 +889,7 @@ export function convert(options: {
                     samplers: [],
                 };
                 for (let iAnimLayer = 0; iAnimLayer < nAnimLayers; ++iAnimLayer) {
-                    const animLayer = fbxSdk.castAsFbxAnimLayer(animStack.GetSrcObject(animLayerCriteria));
+                    const animLayer = fbxSdk.castAsFbxAnimLayer(animStack.GetMember(animLayerCriteria, iAnimLayer));
                     convertNodeAnimationRecursive(rootNode, animLayer, sampleStep, startTime, duration, glTFAnimation);
                 }
                 if (glTFAnimation.samplers.length > 0) {
@@ -914,6 +959,16 @@ export function convert(options: {
             }
         }
 
+        if (duration > convertContext.suspectedAnimationDurationLimit) {
+            console.warn(
+                `The node "${fbxNode.GetName()}"'s animation duration(${duration} seconds) ` +
+                `exceeds the suspected limit ${convertContext.suspectedAnimationDurationLimit} seconds. ` +
+                `This may be abnormal and may leads to running out of memory exception. ` +
+                `To avoid unexpected dump, we ignored this part of animation. ` +
+                `But you can force to process by option --suspected-animation-duration-limit.`);
+            return;
+        }
+
         duration = Math.min(duration, capDuration);
         startTime = Math.max(startTime, capStartTime);
 
@@ -922,11 +977,12 @@ export function convert(options: {
         }
 
         const nFrames = Math.ceil(duration / sampleStep);
+        asserts(nFrames > 0);
 
         const timeChannel: number[] = new Array(nFrames).fill(0);
-        const translationChannel: number[] = !hasTranslationCurve ? [] : new Array(3 * nFrames).fill(0);
-        const rotationChannel: number[] = !hasRotationCurve ? [] : new Array(4 * nFrames).fill(0);
-        const scaleChannel: number[] = !hasScalingCurve ? [] : new Array(3 * nFrames).fill(0);
+        const positionChannel: Vec3[] = !hasTranslationCurve ? [] : new Array(nFrames);
+        const rotationChannel: Quat[] = !hasRotationCurve ? [] : new Array(nFrames);
+        const scaleChannel: Vec3[] = !hasScalingCurve ? [] : new Array(nFrames);
 
         for (let iFrame = 0; iFrame < nFrames; ++iFrame) {
             const sampleTime = startTime + sampleStep * iFrame;
@@ -934,62 +990,87 @@ export function convert(options: {
             fbxSampleTime.SetSecondDouble(sampleTime);
 
             const localTransform = fbxNode.EvaluateLocalTransform(fbxSampleTime);
-            const translation = localTransform.GetT();
-            const rotation = localTransform.GetQ();
-            rotation.Normalize();
-            const scale = localTransform.GetS();
 
             timeChannel[iFrame] = sampleTime - startTime;
             if (hasTranslationCurve) {
-                translationChannel[3 * iFrame + 0] = translation.GetX();
-                translationChannel[3 * iFrame + 1] = translation.GetY();
-                translationChannel[3 * iFrame + 2] = translation.GetZ();
+                const translation = localTransform.GetT();
+                positionChannel[iFrame] = fbxVec3ToVec3(translation);
             }
             if (hasRotationCurve) {
-                rotationChannel[4 * iFrame + 0] = rotation.GetAt(0);
-                rotationChannel[4 * iFrame + 1] = rotation.GetAt(1);
-                rotationChannel[4 * iFrame + 2] = rotation.GetAt(2);
-                rotationChannel[4 * iFrame + 3] = rotation.GetAt(3);
+                const rotation = localTransform.GetQ();
+                rotation.Normalize();
+                rotationChannel[iFrame] = fbxQuatToQuat(rotation);
             }
             if (hasScalingCurve) {
-                scaleChannel[3 * iFrame + 0] = scale.GetX();
-                scaleChannel[3 * iFrame + 1] = scale.GetY();
-                scaleChannel[3 * iFrame + 2] = scale.GetZ();
+                const scale = localTransform.GetS();
+                scaleChannel[iFrame] = fbxVec3ToVec3(scale);
             }
         }
 
+        const {
+            times: optTimes,
+            positions: optPositions,
+            rotations: optRotations,
+            scales: optScales,
+        } = optimizeNodeAnimation(
+            timeChannel,
+            positionChannel,
+            scaleChannel,
+            rotationChannel,
+        );
+
+        const targetNodeIndex = convertContext.getNode(fbxNode);
+        appendNodeAnimation(
+            glTFAnimation,
+            targetNodeIndex,
+            optTimes,
+            optPositions,
+            optRotations,
+            optScales,
+        );
+    }
+
+    function appendNodeAnimation(
+        glTFAnimation: glTF.Animation,
+        targetNodeIndex: number,
+        times: number[],
+        positions: Vec3[],
+        rotations: Quat[],
+        scales: Vec3[],
+    ) {
+        asserts(times.length > 0);
+
+        const nFrames = times.length;
         const nodeTrsCurves: Record<string, {
             data: Float32Array,
             type: string;
             component: number;
         }> = {};
-        if (hasTranslationCurve) {
+        if (positions.length > 0) {
             nodeTrsCurves['translation'] = {
-                data: Float32Array.from(translationChannel),
+                data: flattenVec3Array(positions, Float32Array),
                 type: glTF.VEC3,
                 component: glTF.FLOAT,
             }
         }
-        if (hasRotationCurve) {
+        if (rotations.length > 0) {
             nodeTrsCurves['rotation'] = {
-                data: Float32Array.from(rotationChannel),
+                data: flattenQuatArray(rotations, Float32Array),
                 type: glTF.VEC4,
                 component: glTF.FLOAT,
             }
         }
-        if (hasScalingCurve) {
+        if (scales.length > 0) {
             nodeTrsCurves['scale'] = {
-                data: Float32Array.from(scaleChannel),
+                data: flattenVec3Array(scales, Float32Array),
                 type: glTF.VEC3,
                 component: glTF.FLOAT,
             }
         }
 
-        const targetNodeIndex = convertContext.getNode(fbxNode);
-
-        const minTime = Math.min(...timeChannel);
-        const maxTime = Math.max(...timeChannel);
-        const timeData = Float32Array.from(timeChannel);
+        const minTime = Math.min(...times);
+        const maxTime = Math.max(...times);
+        const timeData = Float32Array.from(times);
         const timeBufferViewInfo = glTFBuilder.createBufferView(timeData.byteLength, 0, 0);
         new Float32Array(timeBufferViewInfo.data).set(timeData);
         const timeAccessor: glTF.Accessor = {
@@ -1038,6 +1119,14 @@ class ConvertContext {
     private _nodeMap: Record<number, number> = {};
     public flipV: boolean = true;
     public imageProcess = ImageProcess.reference;
+
+    /**
+     * The max animation duration, in seconds. SKip the animation curves if the their actual duration exceeds this limit.
+     * Having this field because sometimes 3ds Max will export a large span animation.
+     * This will leads to out of memory problem and cause unexpected application dump.
+     */
+    public suspectedAnimationDurationLimit = 60 * 10; // I think 10 minutes is extraordinary enough...
+
     constructor() {
     }
 
@@ -1118,6 +1207,10 @@ function fbxVector3ArrayToArray(vs: fbxSdk.FbxVector4[], storage: Float32ArrayCo
     return result;
 }
 
+function fbxVec3ToVec3(v: fbxSdk.FbxVector4) {
+    return new Vec3(v.GetX(), v.GetY(), v.GetZ());
+}
+
 function fbxVector4ArrayToArray(vs: fbxSdk.FbxVector4[], storage: Float32ArrayConstructor) {
     const result = new storage(4 * vs.length);
     for (let i = 0; i < vs.length; ++i) {
@@ -1191,6 +1284,10 @@ function fbxQuatToArray(quat: fbxSdk.FbxQuaternion) {
     ];
 }
 
+function fbxQuatToQuat(quat: fbxSdk.FbxQuaternion) {
+    return new Quat(quat.GetAt(0), quat.GetAt(1), quat.GetAt(2), quat.GetAt(3));
+}
+
 function getGeometricTransform(fbxNode: fbxSdk.FbxNode) {
     const meshTranslation = fbxNode.GetGeometricTranslation(fbxSdk.FbxNode.eSourcePivot)
     const meshRotation = fbxNode.GetGeometricRotation(fbxSdk.FbxNode.eSourcePivot)
@@ -1223,7 +1320,6 @@ function GetComponents(type: string) {
             throw new Error(`Unknown component`);
     }
 }
-
 interface JointsWeights {
     elements: InfluencePer4LayerElement[];
 }
@@ -1236,9 +1332,141 @@ type InfluencesPer4 = [JointsPer4, WeightsPer4];
 
 type InfluencePer4LayerElement = InfluencesPer4[];
 
-const glTFExtensionFbxSdkTextureInfoName = 'COCOS_fbxsdk_texture_info';
+const glTFExtensionFbxSdkTextureInfoName = 'COCOS_FBX_SDK_texture_info';
 
 interface GLTFExtensionFbxSdkTextureInfo {
     fileName: string;
     relativeFileName: string;
+}
+
+const glTFExtensionFbxSdkSkinName = 'COCOS_FBX_SDK_skin';
+
+interface GLTFExtensionFbxSdkSkin {
+    /**
+     * Decides which method will be used to do the skinning. See `FBXSkin.EType`.
+     * If not present, means `FBXSkin.eLinear`.
+     */
+    type?: 'rigid' | 'dual_quaternion' | 'blend';
+}
+
+interface WritableArrayLike<T> {
+    length: number;
+    [i: number]: T;
+}
+
+function flattenVec3Array<T extends WritableArrayLike<number>>(vec3Array: Vec3[], constructor: new (size: number) => T) {
+    const nVec3 = vec3Array.length;
+    const result = new constructor(3 * nVec3);
+    for (let i = 0; i < nVec3; ++i) {
+        const v = vec3Array[i];
+        result[3 * i + 0] = v.x;
+        result[3 * i + 1] = v.y;
+        result[3 * i + 2] = v.z;
+    }
+    return result;
+}
+
+function flattenQuatArray<T extends WritableArrayLike<number>>(quatArray: Quat[], constructor: new (size: number) => T) {
+    const nQuat = quatArray.length;
+    const result = new constructor(4 * nQuat);
+    for (let i = 0; i < nQuat; ++i) {
+        const q = quatArray[i];
+        result[4 * i + 0] = q.x;
+        result[4 * i + 1] = q.y;
+        result[4 * i + 2] = q.z;
+        result[4 * i + 3] = q.w;
+    }
+    return result;
+}
+
+function isInMiddleVec3(from: Vec3, to: Vec3, middle: Vec3, epsilon = EPSILON) {
+    return Vec3.isEqual(new Vec3(
+        (from.x + to.x) / 2,
+        (from.y + to.y) / 2,
+        (from.z + to.z) / 2,
+    ), middle, epsilon);
+}
+
+function isInMiddleQuat(from: Quat, to: Quat, middle: Quat, epsilon = EPSILON) {
+    return Quat.isEqual(Quat.slerp(new Quat(), from, to, 0.5), middle, epsilon);
+}
+
+function optimizeNodeAnimation(
+    times: readonly number[],
+    positions: readonly Vec3[],
+    scales: readonly Vec3[],
+    rotations: readonly Quat[],
+) {
+    asserts(times.length > 0);
+    asserts(positions.length === 0 || positions.length === times.length);
+    asserts(rotations.length === 0 || rotations.length === times.length);
+    asserts(scales.length === 0 || scales.length === times.length);
+
+    const hasPosition = positions.length > 0;
+    const hasRotation = rotations.length > 0;
+    const hasScale = scales.length > 0;
+
+    let nOptFrames = 0;
+    const optTimes: number[] = new Array(times.length);
+    const optPositions: Vec3[] = new Array(positions.length);
+    const optScales: Vec3[] = new Array(scales.length);
+    const optRotations: Quat[] = new Array(rotations.length);
+
+    const doReturn = () => ({
+        times: optTimes.slice(0, nOptFrames),
+        positions: optPositions.slice(0, nOptFrames),
+        scales: optScales.slice(0, nOptFrames),
+        rotations: optRotations.slice(0, nOptFrames),
+    });
+
+    if (times.length === 0) {
+        return doReturn();
+    }
+
+    const pushFrame = (iFrame: number) => {
+        const iOptFrame = nOptFrames;
+        optTimes[iOptFrame] = times[iFrame];
+        if (hasPosition) {
+            optPositions[iOptFrame] = Vec3.clone(positions[iFrame]);
+        }
+        if (hasRotation) {
+            optRotations[iOptFrame] = Quat.clone(rotations[iFrame]);
+        }
+        if (hasScale) {
+            optScales[iOptFrame] = Vec3.clone(scales[iFrame]);
+        }
+        ++nOptFrames;
+    }
+
+    pushFrame(0);
+
+    for (let iFrame = 1; iFrame < (times.length - 1); ++iFrame) {
+        let mayBeOptOut = true;
+        const iPreFrame = iFrame - 1;
+        const iNextFrame = iFrame + 1;
+        while (true) { // Break once `mayBeOptOut` is set to `false` or all judgement complete
+            if (hasPosition && !isInMiddleVec3(positions[iPreFrame], positions[iNextFrame], positions[iFrame])) {
+                mayBeOptOut = false;
+                break;
+            }
+            if (hasRotation && !isInMiddleQuat(rotations[iPreFrame], rotations[iNextFrame], rotations[iFrame])) {
+                mayBeOptOut = false;
+                break;
+            }
+            if (hasScale && !isInMiddleVec3(scales[iPreFrame], scales[iNextFrame], scales[iFrame])) {
+                mayBeOptOut = false;
+                break;
+            }
+            break;
+        }
+        if (!mayBeOptOut) {
+            pushFrame(iFrame);
+        }
+    }
+
+    if (times.length > 1) {
+        pushFrame(times.length - 1);
+    }
+
+    return doReturn();
 }
