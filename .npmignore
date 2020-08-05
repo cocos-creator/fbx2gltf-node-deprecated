@@ -1,0 +1,9 @@
+
+.vscode
+src
+test
+out
+LinkFbxSdk.ps1
+fbxsdk-node
+fbxsdk-proxy.d.ts
+tsconfig.json
