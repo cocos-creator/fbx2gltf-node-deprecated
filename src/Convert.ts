@@ -1,6 +1,6 @@
 
 
-import * as fbxSdk from '../fbxsdk-node/fbxsdk-node';
+import * as fbxSdk from '../fbxsdk-proxy';
 import { GLTFBuilder } from './GLTFBuilder';
 import * as glTF from './libglTF';
 import ps from 'path';
