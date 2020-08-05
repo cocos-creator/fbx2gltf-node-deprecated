@@ -10,6 +10,7 @@ import { Quat } from './math/Quat';
 import { asserts } from './Util';
 import { EPSILON } from './math/epsilon';
 import { GLTFExtensionFbxSdkSkin, glTFExtensionFbxSdkSkinName, GLTFExtensionFbxSdkTextureInfo, glTFExtensionFbxSdkTextureInfoName } from './Extensions';
+import { MaterialUsage, MaterialUsageKey, generateMaterialUsageKey } from './detail/MaterialUsage';
 
 export function convert(options: {
     input: string;
@@ -225,10 +226,11 @@ export function convert(options: {
         glTFMeshIndex: number;
         glTFSkinIndex: number;
     } {
-        const meshName = fbxMeshes[0].GetName();
+        const meshName = getMeshName(fbxMeshes[0], fbxNode);
+
         const { meshTransform, normalTransform } = getGeometricTransform(fbxNode);
 
-        const glTFPrimitives: glTF.MeshPrimitive[] = []
+        const glTFPrimitives: glTF.MeshPrimitive[] = [];
         let meshSkinIndex = -1;
         for (const fbxMesh of fbxMeshes) {
             const meshDivision = divideMeshByMaterial(fbxMesh);
@@ -246,7 +248,7 @@ export function convert(options: {
             for (const materialIndexKey of Object.keys(meshDivision)) {
                 const materialIndex = Number(materialIndexKey);
                 const polygons = meshDivision[materialIndex];
-                const glTFPrimitive = convertPrimitive(
+                const { glTFPrimitive, meta: meshMeta } = convertPrimitive(
                     fbxMesh,
                     jointsWeights,
                     polygons,
@@ -255,9 +257,15 @@ export function convert(options: {
                     normalTransform,
                 );
                 const fbxMaterial = fbxNode.GetMaterial(materialIndex);
-                const glTFMaterialIndex = convertMaterial(fbxMaterial);
+                const materialUsage: MaterialUsage = {
+                    hasTransparentVertex: meshMeta.hasTransparentVertex,
+                };
+                const glTFMaterialIndex = convertMaterialUsage(fbxMaterial, materialUsage);
                 if (glTFMaterialIndex >= 0) {
                     glTFPrimitive.material = glTFMaterialIndex;
+                }
+                if (meshMeta.hasTransparentVertex) {
+                    console.debug(`Mesh ${meshName} has transparent vertex.`)
                 }
                 glTFPrimitives.push(glTFPrimitive);
             }
@@ -273,6 +281,19 @@ export function convert(options: {
             glTFMeshIndex: glTFMeshIndex,
             glTFSkinIndex: meshSkinIndex,
         };
+    }
+
+    function getNodeName(fbxNode: fbxSdk.FbxNode) {
+        return fbxNode.GetName();
+    }
+
+    function getMeshName(fbxMesh: fbxSdk.FbxMesh, fbxNode: fbxSdk.FbxNode) {
+        const meshName = fbxMesh.GetName();
+        if (meshName.length === 0) {
+            return getNodeName(fbxNode);
+        } else {
+            return meshName;
+        }
     }
 
     function divideMeshByMaterial(fbxMesh: fbxSdk.FbxMesh) {
@@ -509,6 +530,7 @@ export function convert(options: {
             vertexColors: [],
             jointWeights: [],
         };
+        let hasTransparentVertex = false;
         let allByControlPoint = true;
 
         // Normal element
@@ -576,8 +598,11 @@ export function convert(options: {
                 }
                 // Vertex colors
                 for (let iVertexColorElement = 0; iVertexColorElement < nVertexColorElements; ++iVertexColorElement) {
-                    const color = GetVertexAttribute(vertexColorElements[iVertexColorElement], iControlPoint, iPolygonVertex)
-                    primitive.vertexColors[iVertexColorElement].push(color)
+                    const color = GetVertexAttribute(vertexColorElements[iVertexColorElement], iControlPoint, iPolygonVertex);
+                    primitive.vertexColors[iVertexColorElement].push(color);
+                    if (!hasTransparentVertex && color.mAlpha !== 1.0) {
+                        hasTransparentVertex = true;
+                    }
                 }
                 // Skin influence
                 if (jointsWeights) {
@@ -719,18 +744,39 @@ export function convert(options: {
             bufferViewByteOffset += attributeBytes;
         }
 
-        return glTFPrimitive;
+        return {
+            glTFPrimitive,
+            meta: {
+                hasTransparentVertex,
+            },
+        };
     }
 
-    function convertMaterial(fbxMaterial: fbxSdk.FbxSurfaceMaterial) {
+    function convertMaterialUsage(
+        fbxMaterial: fbxSdk.FbxSurfaceMaterial, usage: MaterialUsage) {
+        const usageKey = generateMaterialUsageKey(usage);
+        let glTFMaterialIndex = convertContext.getMaterialMap(fbxMaterial, usageKey);
+        if (glTFMaterialIndex === undefined) {
+            const glTFMaterial = convertMaterial(fbxMaterial, usage);
+            if (!glTFMaterial) {
+                glTFMaterialIndex = -1;
+            } else {
+                glTFMaterialIndex = glTFBuilder.addMaterial(glTFMaterial);
+            }
+            convertContext.setMaterialMap(fbxMaterial, usageKey, glTFMaterialIndex);
+        }
+        return glTFMaterialIndex;
+    }
+
+    function convertMaterial(fbxMaterial: fbxSdk.FbxSurfaceMaterial, usage: MaterialUsage) {
         if (fbxMaterial.GetClassId().Is(fbxSdk.FbxSurfaceLambert.ClassId)) {
-            return convertLambertMaterial(fbxSdk.castAsFbxSurfaceLambert(fbxMaterial));
+            return convertLambertMaterial(fbxSdk.castAsFbxSurfaceLambert(fbxMaterial), usage);
         } else {
-            return -1;
+            return null;
         }
     }
 
-    function convertLambertMaterial(fbxMaterial: fbxSdk.FbxSurfaceLambert) {
+    function convertLambertMaterial(fbxMaterial: fbxSdk.FbxSurfaceLambert, usage: MaterialUsage) {
         const materialName = fbxMaterial.GetName();
 
         const fbxTransparentColor = fbxMaterial.TransparentColor.Get();
@@ -812,12 +858,11 @@ export function convert(options: {
             normalTexture: glTFNormalTextureInfo,
             emissiveTexture: glTFEmissiveTextureInfo,
         };
-        if (glTFTransparency < 1) {
+        if (glTFTransparency < 1 || usage.hasTransparentVertex) {
             glTFMaterial.alphaMode = glTF.BLEND;
         }
 
-        const glTFMaterialIndex = glTFBuilder.addMaterial(glTFMaterial);
-        return glTFMaterialIndex;
+        return glTFMaterial;
     }
 
     function convertTextureProperty(fbxProperty: fbxSdk.FbxProperty) {
@@ -1137,6 +1182,10 @@ export namespace convert {
 
 class ConvertContext {
     private _nodeMap: Record<number, number> = {};
+    private _materialMap: Map<{
+        material: number;
+        usageKey: MaterialUsageKey;
+    }, number> = new Map();
     public imageProcess = ImageProcess.reference;
 
     constructor() {
@@ -1158,6 +1207,24 @@ class ConvertContext {
     public getNodeIf(fbxNode: fbxSdk.FbxNode): undefined | number {
         const fbxNodeId = fbxNode.GetUniqueID();
         return this._nodeMap[fbxNodeId];
+    }
+
+    public setMaterialMap(
+        fbxMaterial: fbxSdk.FbxSurfaceMaterial, usageKey: MaterialUsageKey, glTFMaterialIndex: number) {
+        const fbxMaterialId = fbxMaterial.GetUniqueID();
+        this._materialMap.set({
+            material: fbxMaterialId,
+            usageKey,
+        }, glTFMaterialIndex);
+    }
+
+    public getMaterialMap(fbxMaterial: fbxSdk.FbxSurfaceMaterial, usageKey: MaterialUsageKey) {
+        const fbxMaterialId = fbxMaterial.GetUniqueID();
+        for (const [k, v] of this._materialMap) {
+            if (k.material === fbxMaterialId && k.usageKey === usageKey) {
+                return v;
+            }
+        }
     }
 }
 
@@ -1335,6 +1402,7 @@ function GetComponents(type: string) {
 interface JointsWeights {
     elements: InfluencePer4LayerElement[];
 }
+
 
 type WeightsPer4 = [number, number, number, number];
 
