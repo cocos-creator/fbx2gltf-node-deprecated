@@ -5,12 +5,14 @@
   "main": "fbxsdk-node.js",
   "dependencies": {
     "fs-extra": "^9.0.1",
-    "urijs": "^1.19.2"
+    "urijs": "^1.19.2",
+    "yargs": "^15.4.1"
   },
   "devDependencies": {
     "@types/fs-extra": "^9.0.1",
     "@types/node": "^14.0.25",
-    "@types/urijs": "^1.19.9"
+    "@types/urijs": "^1.19.9",
+    "@types/yargs": "^15.0.5"
   },
   "scripts": {
     "build": "tsc"

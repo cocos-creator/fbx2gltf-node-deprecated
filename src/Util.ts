@@ -1,3 +1,4 @@
+import { AssertionError } from 'assert';
 import URI from 'urijs';
 import nodeUrl from 'url';
 
@@ -9,4 +10,10 @@ export function relativeUriBetweenPath(from: string, to: string) {
     const fromUri = new URI(nodeUrl.pathToFileURL(from).href);
     const toUri = new URI(nodeUrl.pathToFileURL(to).href);
     return toUri.relativeTo(fromUri.href()).href();
+}
+
+export function asserts(expr: any): asserts expr {
+    if (!expr) {
+        throw new AssertionError();
+    }
 }

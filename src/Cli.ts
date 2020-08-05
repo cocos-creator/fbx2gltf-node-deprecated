@@ -2,19 +2,26 @@ import { convert } from './Convert';
 import fs from 'fs-extra';
 import ps from 'path';
 import { write, EmbeddedImageOperation, ExternalImageOperation } from './Writer';
-
+import yargs from 'yargs';
 
 (async () => {
-    const outFile = ps.join('out', 'out.gltf');
-    const outFbmDir = ps.join('out', 'custom-fbm-dir');
+    const cliArgs = readCliArgs();
+    
+    const input = ps.resolve(cliArgs.input);
+    const inputDir = ps.dirname(input);
+    const inputBaseNameNoExt = ps.basename(input, ps.extname(input));
 
-    await fs.ensureDir(ps.dirname(outFbmDir));
+    const outFile = cliArgs.output ?? (ps.join(process.cwd(), `${inputBaseNameNoExt}_glTF`, `${inputBaseNameNoExt}.gltf`));
+    await fs.ensureDir(ps.dirname(outFile));
+
+    const fbmDir = cliArgs.fbmDir;
+    if (typeof fbmDir !== 'undefined') {
+        await fs.ensureDir(ps.dirname(fbmDir));
+    }
 
     const glTF = convert({
-        input: ps.join('test', 'Models', 'tuzi_new@run.fbx'),
-        // input: ps.join('test', 'Models', 'Sci-Fi Orc LOD.FBX'),
-        // input: ps.join('test', 'Models', 'multiplematerials.FBX'),
-        fbmDir: outFbmDir,
+        input,
+        fbmDir,
     });
 
     write(glTF, {
@@ -23,5 +30,39 @@ import { write, EmbeddedImageOperation, ExternalImageOperation } from './Writer'
         embeddedImageOperation: EmbeddedImageOperation.embed,
         externalImageOperation: ExternalImageOperation.reference,
     });
-    
 })();
+
+function readCliArgs(): {
+    input: string;
+    output?: string;
+    fbmDir?: string;
+    suspectedAnimationDurationLimit?: number;
+} {
+    yargs.help();
+    yargs.command('* <filename>', false, (yargs) => {
+        yargs.positional('filename', {
+            type: 'string',
+            demandOption: true,
+            description: 'The input FBX file.'
+        });
+        yargs.option('output', {
+            type: 'string',
+            description: 'The output path to the .gltf or .glb file.',
+        });
+        yargs.option('fbm-dir', {
+            type: 'string',
+            description: 'The directory to store the embedded media.',
+        });
+        yargs.option('suspected-animation-duration-limit', {
+            type: 'number',
+            description: 'The suspected animation duration limit.',
+        });
+    });
+    const argv = yargs.argv;
+    return {
+        input: argv['filename'] as string,
+        output: argv['output'] as string | undefined,
+        fbmDir: argv['fbm-dir'] as string | undefined,
+        suspectedAnimationDurationLimit: argv['suspected-animation-duration-limit'] as number | undefined,
+    };
+}
